@@ -3,6 +3,7 @@ import alg_base
 import os
 import numpy as np
 import pandas as pd
+import math
 
 MAX_SCORE = 100
 MIN_SCORE = 0
@@ -47,6 +48,7 @@ class AlgRadMMBase(alg_base.AlgBase):
         self._gtruth_key_path = os.path.join(base_path, "answerKey.csv")
         self._gtruth = pd.read_csv(self._gtruth_key_path)
         self._gtruth.set_index("RunID", inplace=True)
+        self._source_data = pd.read_csv(os.path.join(base_path, "SourceInfov3/SourceData.csv"))
 
     def get_train_ids(self):
         return self._train_metadata.index
@@ -59,7 +61,7 @@ class AlgRadMMBase(alg_base.AlgBase):
         ret[:, 0] = self._train_metadata.loc[ids]["SourceID"]
         ret[:, 1] = self._train_metadata.loc[ids]["SourceTime"]
         return ret
-    def score(self, pred_y, ids):
+    def score(self, pred_y, ids, verbose=False):
         public_with = public_without = private_with = private_without = 0
 
         truth_lines = [];
@@ -69,7 +71,7 @@ class AlgRadMMBase(alg_base.AlgBase):
             file.close() 
         except IOError:
             print("Can't open truth file '" + self._gtruth_key_path + "'.") 
-            return (-1, -1) 
+            return -1
     
         truth = {}
         for line in truth_lines:
@@ -144,9 +146,13 @@ class AlgRadMMBase(alg_base.AlgBase):
                             if (int(solution[SRC_ID]) == truth[run_id][SRC_ID]):
                                 score += S_type * p
                                 TPtype[part] += 1
+                            else:
+                                #print("badtype: %d" % run_id)
+                                pass
                         else:
                             score += S_FP * p
                             FL[part] += 1
+                            #print("FL: %d" % run_id)
                             #FP[part] += 1
                             #FN[part] += 1
                 else:
@@ -159,6 +165,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                         # False positive:
                         score += S_FP * p
                         FP[part] += 1
+                        print("FP: %d" % run_id)
                 
                 # If Public field == 1 in ground truth file, add to public score:
                 if truth[run_id][PUBLIC] == 1:
@@ -166,5 +173,29 @@ class AlgRadMMBase(alg_base.AlgBase):
                 else:
                     private_score += score
             except Exception as e:
+                print(str(e))
                 return -1
+
+        if verbose:
+            part = 0
+            print("  Public part:")
+            print("    TP =", '{:>5}'.format(TP[part]), "|", "FP =", '{:>5}'.format(FP[part]))
+            print("    FL =", '{:>5}'.format(FL[part]), "|-----------")
+            print("    FN =", '{:>5}'.format(FN[part]), "|", "TN =", '{:>5}'.format(TN[part]))
+            print("")
+            print("    Correct type: ", TPtype[part], "/", TP[part], "=", "{0:.2f}".format(100 * TPtype[part] / max(1, TP[part])), "%")
+            print("    Average distance bonus:", "{0:.2f}".format(100 * TPdist[part] / max(1, TP[part])),"%")
+            print("")
+
         return round(public_score, 6)
+
+    def write_submission(self, pred_y, ids, fname):
+        fpath = os.path.join(self._base_path, fname)
+        dat=np.zeros((len(ids),3))
+        dat[:,0] = ids
+        dat[:,1:] = pred_y[:,0:]
+        data = pd.DataFrame(columns=["RunID","SourceID","SourceTime"],data=dat)
+        data["RunID"] = data["RunID"].astype(np.int64)
+        data["SourceID"] = data["SourceID"].astype(np.int64)
+        data.set_index("RunID",inplace=True)
+        data.to_csv(fpath)

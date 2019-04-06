@@ -14,6 +14,7 @@ EBINS = int(128 * (MAX_ENERGY / ENERGY_STEP))
 KEV_PER_EBIN = MAX_ENERGY / EBINS
 
 SOURCE_THRESH = [ 0, 4.0, 3.5, 4.0, 5.5, 6.0, 6.0, ]
+SOURCE_NEI1_THRESH = [ 0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, ]
 
 ENABLED_SOURCES = [1,2,3,4,5,6]
 
@@ -103,9 +104,20 @@ class AlgRadMMImgProcBand(alg_radmm_base.AlgRadMMBase):
                     for tcur in range(tmax):
                         mean_c = np.mean(dat[tcur, from_t:to_t])
                         zscores.append(np.abs((mean_c - mean_z) / std_z))
-                    idx = np.argmax(zscores)
-                    if zscores[idx] > SOURCE_THRESH[source]:
-                        final_zscores.append([zscores[idx], idx, source])
+
+                    zscores1 = [0]*tmax
+                    for j in range(1,len(zscores)-1):
+                        if zscores[j] < SOURCE_THRESH[source]:
+                            continue
+                        if zscores[j] < SOURCE_NEI1_THRESH[source] * zscores[j-1]:
+                            continue
+                        if zscores[j] < SOURCE_NEI1_THRESH[source] * zscores[j+1]:
+                            continue
+                        zscores1[j] = zscores[j]
+
+                    idx = np.argmax(zscores1)
+                    if zscores1[idx]:
+                        final_zscores.append([zscores1[idx], idx, source])
 
             if final_zscores:
                 idx = np.argmax(final_zscores, axis=0)[0]

@@ -5,7 +5,7 @@ import numpy as np
 class AlgRadMMSimple(alg_radmm_base.AlgRadMMBase):
     def __init__(self, base_path):
         alg_radmm_base.AlgRadMMBase.__init__(self, base_path)
-    def get_train_x(self, ids):
+    def get_train_x(self, ids, validation):
         pass
     def get_test_x(self, ids):
         pass
