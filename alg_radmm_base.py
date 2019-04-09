@@ -134,6 +134,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                     if (int(solution[SRC_ID]) == 0):
                         score += S_FN * p
                         FN[part] += 1
+                        print("FN: %d" % run_id)
                     else:
                     
                         # Something is detected really close?
@@ -147,7 +148,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                                 score += S_type * p
                                 TPtype[part] += 1
                             else:
-                                print("badtype: %d" % run_id)
+                                #print("badtype: %d" % run_id)
                                 pass
                         else:
                             score += S_FP * p
@@ -161,6 +162,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                         # True negative:
                         score += S_TN * p
                         TN[part] += 1
+                        #print("TN: %d" % run_id)
                     else:
                         # False positive:
                         score += S_FP * p

@@ -17,6 +17,7 @@ EBINS = 128
 KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
 SIGNAL_THRESHOLD = 1.8
 BG_THRESHOLD = 13.0
+SIGNAL5_THRESHOLD = 0.4
 
 SOURCE_THRESH = [ 0, 4.0, 3.5, 4.0, 5.5, 6.0, 6.0, ]
 SOURCE_NEI1_THRESH = [ 0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, ]
@@ -119,31 +120,18 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
             self.model_bgs.components_[-10 + i] = self.source_hist[i]
         self.comps_bgs = self.model_bgs.components_
 
-#        xvec = []
-#        yvec = []
-#        for (i,runid) in enumerate(ids):
-#            if self._train_metadata.loc[runid]["SourceID"] == 0:
-#                continue
-#            source_id = self._train_metadata.loc[runid]["SourceID"]
-#            ti = int(self._train_metadata.loc[runid]["SourceTime"])
-#
-#            dat = np.abs(x[i])
-#            weigh = self.model_bg.transform(dat)
-#            weigh_s = self.model_bgs.transform(dat)
-#
-#            for tti in ((ti, 1), (10, 0)):
-#                fit_bg = np.dot(weigh[tti[0]], self.comps_bg)
-#                fit_bgs = np.dot(weigh_s[tti[0]], self.comps_bgs)
-#
-#                norm_bg = np.linalg.norm(fit_bg - dat[tti[0], :])
-#                norm_bgs = np.linalg.norm(fit_bgs - dat[tti[0], :])
-#
-#                xvec.append([norm_bgs, norm_bg / norm_bgs])
-#                yvec.append(tti[1])
-#
-#        self.rthresh_forest = RandomForestClassifier(n_estimators=50, max_depth=2, random_state=0)
-#        self.rthresh_forest.fit(np.array(xvec), np.array(yvec))
-
+        self.model_arr_bgs = []
+        for i in range(6):
+            naddcomp = 4 if i == 5 else 2
+            self.model_arr_bgs.append(NMF(ncomp_bg+naddcomp, init='random', random_state=0))
+            self.model_arr_bgs[-1].fit(xlist)
+            for j in range(ncomp_bg):
+                self.model_arr_bgs[-1].components_[j] = self.model_bg.components_[j]
+            if i == 5:
+                self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[0], self.source_hist[5], 
+                        self.source_hist[4], self.source_hist[9])
+            else:
+                self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[i], self.source_hist[i+5])
 
     def predict(self, x, ids):
         ret = np.zeros((len(ids), 2))
@@ -154,33 +142,46 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
             tmax = dat.shape[0]
 
             weigh = self.model_bg.transform(dat[30:])
-            weigh_s = self.model_bgs.transform(dat[30:])
 
-            xvec_list = []
+            weigh_arr_s = []
+            for source in range(len(self.model_arr_bgs)):
+                weigh_arr_s.append(self.model_arr_bgs[source].transform(dat[30:]))
+
             arr = []
             tiarr = []
+            sourcearr = []
             for ti in range(30, tmax):
                 fit_bg = np.dot(weigh[ti - 30], self.comps_bg)
-                fit_bgs = np.dot(weigh_s[ti - 30], self.comps_bgs)
-
                 norm_bg = np.linalg.norm(fit_bg - dat[ti, :])
-                norm_bgs = np.linalg.norm(fit_bgs - dat[ti, :])
 
-                #xvec_list.append([norm_bg, norm_bg / norm_bgs])
+                sres = []
+                sres_bgs = []
+                for source in range(len(self.model_arr_bgs)):
+                    fit_bgs = np.dot(weigh_arr_s[source][ti - 30], self.model_arr_bgs[source].components_)
+                    norm_bgs = np.linalg.norm(fit_bgs - dat[ti, :])
+                    if source == 5:
+                        warr = weigh_arr_s[source][ti - 30]
+                        w01 = np.abs(warr[0] + warr[1])
+                        w23 = np.abs(warr[2] + warr[3])
+                        if w01 / (w01 + w23) < SIGNAL5_THRESHOLD:
+                            continue
 
-                #if pred_ret[0] == 1:
-                if norm_bgs > BG_THRESHOLD and norm_bg / norm_bgs > SIGNAL_THRESHOLD:
-                    arr.append(norm_bg / norm_bgs)
-                    tiarr.append(ti)
+                    sres.append(norm_bg / norm_bgs)
+                    sres_bgs.append(norm_bgs)
 
-            #pred_ret = self.rthresh_forest.predict(np.array(xvec_list))
+                if sres:
+                    sresi = np.argmax(sres)
+                    coeff = 1.1 if sresi == 5 else 1.0
+                    if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
+                        arr.append(sres[sresi])
+                        tiarr.append(ti)
+                        sourcearr.append(sresi)
 
             if arr:
                 idx = np.argmax(arr)
                 ti = tiarr[idx]
-                warr = weigh_s[ti - 30][-10:]
-                wi = np.argmax(warr)
-                ret[i, 0] = 1 + (wi % 5)
+                si = sourcearr[idx]
+                ret[i, 0] = 1 + si
                 ret[i, 1] = ti + 0.5
 
         return ret
