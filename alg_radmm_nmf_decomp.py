@@ -10,7 +10,7 @@ from utils import denoise_signal
 from sklearn.decomposition import NMF
 from sklearn.ensemble import RandomForestClassifier
 
-NCOMP_BG = 8
+NCOMP_BG = 12
 NTRAIN_BG = 128
 MAX_ENERGY = 2500
 EBINS = 128
