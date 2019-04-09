@@ -15,24 +15,37 @@ NTRAIN_BG = 128
 MAX_ENERGY = 2500
 EBINS = 128
 KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
-SIGNAL_THRESHOLD = 1.8
-BG_THRESHOLD = 13.0
+SIGNAL_THRESHOLD = 1.5
+BG_THRESHOLD = 10.0
 SIGNAL5_THRESHOLD = 0.4
 
-SOURCE_THRESH = [ 0, 4.0, 3.5, 4.0, 5.5, 6.0, 6.0, ]
-SOURCE_NEI1_THRESH = [ 0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, ]
+#SOURCE_METADATA = [ 
+#    [[80,120],[170,210]], #1
+#    [[50,75]], #2
+#    [[330,430]], #3
+#    [[0,1400]], #[[1100,1400]], #4
+#    [[130,180]], #5
+#    [], #6
+#]
 
-ENABLED_SOURCES = [1,2,3,4,5,6]
+SOURCE_METADATA = [
+    [[0,1500]], #1
+    [[0,1500]], #2
+    [[0,1500]], #3
+    [[0,1500]], #4
+    [[0,1500]], #5
+    [[0,1500]], #6
+    ]
 
-SOURCE_METADATA = [ 
-    [], #0
-    [[87,107],[170,200]], #1
-    [[50,75]], #2
-    [[350,380]], #3
-    [[1160,1190],[1320,1350]], #4
-    [[125,155]], #5
-    [], #6
-]
+#SOURCE_METADATA[5].append(SOURCE_METADATA[0][0])
+#SOURCE_METADATA[5].append(SOURCE_METADATA[0][1])
+#SOURCE_METADATA[5].append(SOURCE_METADATA[4][0])
+
+def _rdown(x, kev):
+    return int(x/kev)
+def _rup(x, kev):
+    return int((x + kev-1)/kev)
+
 
 class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
     def __init__(self, base_path):
@@ -50,6 +63,28 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
                     arr.append(dat["CountRate"].mean())
                 self.source_hist[shielding * 5 + source, :] = np.abs(denoise_signal(np.array(arr)))
                 self.source_hist[shielding * 5 + source, :] /= np.max(self.source_hist[shielding * 5 + source, :])
+
+        kev_per_bin = int(MAX_ENERGY / EBINS)
+        self.bin_map_arr = []
+        for i in range(len(SOURCE_METADATA)):
+            bin_map = dict()
+            for elem in SOURCE_METADATA[i]:
+                from_idx = _rdown(elem[0], kev_per_bin)
+                to_idx = _rup(elem[1], kev_per_bin)
+                for idx in range(from_idx, to_idx + 1):
+                    bin_map[idx] = 1
+            self.bin_map_arr.append(bin_map)
+        min_mp_sz = min([len(mp) for mp in self.bin_map_arr])
+        self.weigh_thresh_arr = []
+        self.weigh_bin_map_arr = []
+        for i in range(len(self.bin_map_arr)):
+            self.weigh_bin_map_arr.append(min_mp_sz / len(self.bin_map_arr[i]))
+            self.bin_map_arr[i] = list(self.bin_map_arr[i])
+            self.weigh_thresh_arr.append(len(self.bin_map_arr[i]) / EBINS)
+
+    def _calc_source_norm(self, dvec, source):
+        slice_vec = self.bin_map_arr[source]
+        return np.linalg.norm(dvec[slice_vec]) * self.weigh_bin_map_arr[source]
 
     def _prepare(self, ids, is_train=True, validation=False, cache=True):
         filename = "train_nmf.pkl" if is_train else "test_nmf.pkl"
@@ -152,26 +187,30 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
             sourcearr = []
             for ti in range(30, tmax):
                 fit_bg = np.dot(weigh[ti - 30], self.comps_bg)
-                norm_bg = np.linalg.norm(fit_bg - dat[ti, :])
+                diff_fit_bg = fit_bg - dat[ti, :]
 
                 sres = []
                 sres_bgs = []
                 for source in range(len(self.model_arr_bgs)):
                     fit_bgs = np.dot(weigh_arr_s[source][ti - 30], self.model_arr_bgs[source].components_)
-                    norm_bgs = np.linalg.norm(fit_bgs - dat[ti, :])
-                    if source == 5:
-                        warr = weigh_arr_s[source][ti - 30]
-                        w01 = np.abs(warr[0] + warr[1])
-                        w23 = np.abs(warr[2] + warr[3])
-                        if w01 / (w01 + w23) < SIGNAL5_THRESHOLD:
-                            continue
+                    diff_fit_bgs = fit_bgs - dat[ti, :]
+
+                    norm_bg = self._calc_source_norm(diff_fit_bg, source)
+                    norm_bgs = self._calc_source_norm(diff_fit_bgs, source)
+
+#                    if source == 5:
+#                        warr = weigh_arr_s[source][ti - 30]
+#                        w01 = np.abs(warr[0] + warr[1])
+#                        w23 = np.abs(warr[2] + warr[3])
+#                        if w01 / (w01 + w23) < SIGNAL5_THRESHOLD or w23 / (w01 + w23) < SIGNAL5_THRESHOLD:
+#                            continue
 
                     sres.append(norm_bg / norm_bgs)
                     sres_bgs.append(norm_bgs)
 
                 if sres:
                     sresi = np.argmax(sres)
-                    coeff = 1.1 if sresi == 5 else 1.0
+                    coeff = 1.5 if sresi == 5 else 1.0
                     if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
                         arr.append(sres[sresi])
                         tiarr.append(ti)
