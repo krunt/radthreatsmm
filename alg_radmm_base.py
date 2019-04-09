@@ -147,7 +147,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                                 score += S_type * p
                                 TPtype[part] += 1
                             else:
-                                #print("badtype: %d" % run_id)
+                                print("badtype: %d" % run_id)
                                 pass
                         else:
                             score += S_FP * p
