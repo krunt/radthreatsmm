@@ -19,10 +19,10 @@ def main():
     print("Score: %f" % radmmAlg.score(pred_y, val_ids_set, verbose=True))
     radmmAlg.write_submission(pred_y, val_ids_set, "submission.csv")
 
-#    test_ids = radmmAlg.get_test_ids()
-#    test_x = radmmAlg.get_test_x(test_ids)
-#    pred_y = radmmAlg.predict(test_x, test_ids)
-#    radmmAlg.write_submission(pred_y, test_ids, "solution.csv")
+    #test_ids = radmmAlg.get_test_ids()
+    #test_x = radmmAlg.get_test_x(test_ids)
+    #pred_y = radmmAlg.predict(test_x, test_ids)
+    #radmmAlg.write_submission(pred_y, test_ids, "solution.csv")
 
 if __name__ == '__main__':
     main()

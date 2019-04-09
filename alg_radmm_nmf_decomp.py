@@ -18,6 +18,7 @@ KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
 SIGNAL_THRESHOLD = 1.5
 BG_THRESHOLD = 10.0
 SIGNAL5_THRESHOLD = 0.4
+SIGNAL_COEFF = [1.0,1.1,1.0,0.9,1.1,1.5]
 
 #SOURCE_METADATA = [ 
 #    [[80,120],[170,210]], #1
@@ -28,13 +29,14 @@ SIGNAL5_THRESHOLD = 0.4
 #    [], #6
 #]
 
+UTHR = 1500
 SOURCE_METADATA = [
-    [[0,1500]], #1
-    [[0,1500]], #2
-    [[0,1500]], #3
-    [[0,1500]], #4
-    [[0,1500]], #5
-    [[0,1500]], #6
+    [[0,UTHR]], #1
+    [[0,UTHR]], #2
+    [[0,UTHR]], #3
+    [[0,UTHR]], #4
+    [[0,UTHR]], #5
+    [[0,UTHR]], #6
     ]
 
 #SOURCE_METADATA[5].append(SOURCE_METADATA[0][0])
@@ -190,6 +192,7 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
                 diff_fit_bg = fit_bg - dat[ti, :]
 
                 sres = []
+                sres_bg = []
                 sres_bgs = []
                 for source in range(len(self.model_arr_bgs)):
                     fit_bgs = np.dot(weigh_arr_s[source][ti - 30], self.model_arr_bgs[source].components_)
@@ -206,11 +209,12 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
 #                            continue
 
                     sres.append(norm_bg / norm_bgs)
+                    sres_bg.append(norm_bg)
                     sres_bgs.append(norm_bgs)
 
                 if sres:
                     sresi = np.argmax(sres)
-                    coeff = 1.5 if sresi == 5 else 1.0
+                    coeff = SIGNAL_COEFF[sresi]
                     if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
                         arr.append(sres[sresi])
                         tiarr.append(ti)

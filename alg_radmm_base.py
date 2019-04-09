@@ -134,7 +134,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                     if (int(solution[SRC_ID]) == 0):
                         score += S_FN * p
                         FN[part] += 1
-                        print("FN: %d" % run_id)
+                        #print("FN: %d" % run_id)
                     else:
                     
                         # Something is detected really close?
@@ -167,7 +167,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                         # False positive:
                         score += S_FP * p
                         FP[part] += 1
-                        print("FP: %d" % run_id)
+                        #print("FP: %d" % run_id)
                 
                 # If Public field == 1 in ground truth file, add to public score:
                 if truth[run_id][PUBLIC] == 1:
