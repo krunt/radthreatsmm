@@ -6,7 +6,7 @@ import pandas as pd
 import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from utils import denoise_signal
+from utils import denoise_signal, denoise_signal_stub
 from sklearn.decomposition import NMF
 from sklearn.ensemble import RandomForestClassifier
 
@@ -15,10 +15,27 @@ NTRAIN_BG = 128
 MAX_ENERGY = 2500
 EBINS = 128
 KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
-SIGNAL_THRESHOLD = 1.5
+SIGNAL_THRESHOLD = 1.4
 BG_THRESHOLD = 10.0
-SIGNAL5_THRESHOLD = 0.4
 SIGNAL_COEFF = [1.0,1.1,1.0,0.9,1.1,1.5]
+#SIGNAL_THRESHOLD_ARR = [1.4,1.3,1.5,1.3,1.5,1.6]
+#SIGNAL_THRESHOLD_ARR = [1.4,1.3,1.5,1.3,1.4,1.56]
+#BG_THRESHOLD_ARR = [9.33,10.66,9.33,8,12,9.6]
+SIGNAL_THRESHOLD_ARR = [1.45,1.3375,1.45,1.1125,1.45,1.7693]
+#BG_THRESHOLD_ARR = [9.33,10.66,9.33,8,12,9.6]
+#TSCALE_LIST = [0.5,1.0,2.0]
+TSCALE_LIST = [0.125,0.25,0.5,1.0,2.0,4.0,8.0]
+
+# results for TSCALE_LIST = [0.25,0.5,1.0,2.0,4.0]
+#  Public part:
+#    TP =   697 | FP =     1
+#    FL =    20 |-----------
+#    FN =   250 | TN =   972
+#
+#    Correct type:  569 / 697 = 81.64 %
+#    Average distance bonus: 82.35 %
+#
+#Score: 44.234507
 
 #SOURCE_METADATA = [ 
 #    [[80,120],[170,210]], #1
@@ -63,7 +80,7 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
                     energyTo = (binidx + 1) / EBINS * MAX_ENERGY
                     dat = sdata[(sdata["Shielding"] == shielding) & (sdata["SourceID"] == source + 1) & (sdata["PhotonEnergy"] > energyFrom) & (sdata["PhotonEnergy"] < energyTo)]
                     arr.append(dat["CountRate"].mean())
-                self.source_hist[shielding * 5 + source, :] = np.abs(denoise_signal(np.array(arr)))
+                self.source_hist[shielding * 5 + source, :] = np.abs(denoise_signal_stub(np.array(arr)))
                 self.source_hist[shielding * 5 + source, :] /= np.max(self.source_hist[shielding * 5 + source, :])
 
         kev_per_bin = int(MAX_ENERGY / EBINS)
@@ -101,25 +118,27 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
         tpath = self._train_dir_path if is_train else self._test_dir_path
         ret = []
         for id in tqdm(ids):
-            dat = pd.read_csv(os.path.join(tpath, "%d.csv" % id), header=None)
-
-            d0=dat[0]*1e-6
-            d1=np.cumsum(d0)
-            d2=dat[1]
-            tmax=int(d1.values[-1])
-
-            bins = EBINS
-            zmat = np.zeros((tmax,bins))
-
-            ebins = np.linspace(0,MAX_ENERGY,bins)
-
-            for i in range(tmax):
-                dind = np.argwhere((d1 > i) & (d1 < (i + 1))).flatten() 
-                d3 = d2[dind]
-                hist = np.histogram(d3, bins=ebins)[0]
-                hist = denoise_signal(hist)
-                zmat[i,:] = hist
-            ret.append(zmat)
+            for tscale in TSCALE_LIST:
+                dat = pd.read_csv(os.path.join(tpath, "%d.csv" % id), header=None)
+    
+                d0=dat[0]*1e-6
+                d1=np.cumsum(d0)
+                d2=dat[1]
+                invtscale=1/tscale
+                tmax=int(d1.values[-1]*tscale)
+    
+                bins = EBINS
+                zmat = np.zeros((tmax,bins))
+    
+                ebins = np.linspace(0,MAX_ENERGY,bins+1)
+    
+                for i in range(int(30*tscale),tmax):
+                    dind = np.argwhere((d1 > i * invtscale) & (d1 < (i + 1) * invtscale)).flatten() 
+                    d3 = d2[dind]
+                    hist = np.histogram(d3, bins=ebins)[0]
+                    hist = denoise_signal_stub(hist)
+                    zmat[i,:] = hist
+                ret.append(zmat)
         if cache:
             fd = open(tcache_path, "wb")
             pkl.dump(ret, fd)
@@ -170,61 +189,102 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
             else:
                 self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[i], self.source_hist[i+5])
 
-    def predict(self, x, ids):
+    def predict(self, x, ids, export=False):
         ret = np.zeros((len(ids), 2))
+
+        export_data = []
 
         for i in tqdm(range(len(ids))):
             id = ids[i]
-            dat = np.abs(x[i])
-            tmax = dat.shape[0]
-
-            weigh = self.model_bg.transform(dat[30:])
-
-            weigh_arr_s = []
-            for source in range(len(self.model_arr_bgs)):
-                weigh_arr_s.append(self.model_arr_bgs[source].transform(dat[30:]))
 
             arr = []
             tiarr = []
             sourcearr = []
-            for ti in range(30, tmax):
-                fit_bg = np.dot(weigh[ti - 30], self.comps_bg)
-                diff_fit_bg = fit_bg - dat[ti, :]
+            tscalearr = []
 
-                sres = []
-                sres_bg = []
-                sres_bgs = []
+            g_arr = []
+            g_tiarr = []
+            g_sourcearr = []
+            g_tscalearr = []
+            g_sres_bgs = []
+
+            for (j, tscale) in enumerate(TSCALE_LIST):
+                dat = np.abs(x[len(TSCALE_LIST)*i + j])
+                tmax = dat.shape[0]
+
+                weigh = self.model_bg.transform(dat)
+
+                weigh_arr_s = []
                 for source in range(len(self.model_arr_bgs)):
-                    fit_bgs = np.dot(weigh_arr_s[source][ti - 30], self.model_arr_bgs[source].components_)
-                    diff_fit_bgs = fit_bgs - dat[ti, :]
+                    weigh_arr_s.append(self.model_arr_bgs[source].transform(dat))
 
-                    norm_bg = self._calc_source_norm(diff_fit_bg, source)
-                    norm_bgs = self._calc_source_norm(diff_fit_bgs, source)
+                for ti in range(int(30*tscale),tmax):
+                    fit_bg = np.dot(weigh[ti], self.comps_bg)
+                    diff_fit_bg = fit_bg - dat[ti, :]
+    
+                    sres = []
+                    sres_bg = []
+                    sres_bgs = []
+                    for source in range(len(self.model_arr_bgs)):
+                        fit_bgs = np.dot(weigh_arr_s[source][ti], self.model_arr_bgs[source].components_)
+                        diff_fit_bgs = fit_bgs - dat[ti, :]
+    
+                        norm_bg = self._calc_source_norm(diff_fit_bg, source)
+                        norm_bgs = self._calc_source_norm(diff_fit_bgs, source)
+    
+                        sres.append(norm_bg / norm_bgs)
+                        sres_bg.append(norm_bg)
+                        sres_bgs.append(norm_bgs)
+    
+                    if sres:
+                        sresi = np.argmax(sres)
+                        coeff = SIGNAL_COEFF[sresi]
+                        thresh = SIGNAL_THRESHOLD_ARR[sresi]
+                        bgthresh = BG_THRESHOLD #BG_THRESHOLD_ARR[sresi]
+                        #if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
+                        if sres_bgs[sresi] > bgthresh and sres[sresi] > thresh:
+                            arr.append(sres[sresi])
+                            tiarr.append(ti / tscale)
+                            sourcearr.append(sresi)
+                            tscalearr.append(tscale)
 
-#                    if source == 5:
-#                        warr = weigh_arr_s[source][ti - 30]
-#                        w01 = np.abs(warr[0] + warr[1])
-#                        w23 = np.abs(warr[2] + warr[3])
-#                        if w01 / (w01 + w23) < SIGNAL5_THRESHOLD or w23 / (w01 + w23) < SIGNAL5_THRESHOLD:
-#                            continue
-
-                    sres.append(norm_bg / norm_bgs)
-                    sres_bg.append(norm_bg)
-                    sres_bgs.append(norm_bgs)
-
-                if sres:
-                    sresi = np.argmax(sres)
-                    coeff = SIGNAL_COEFF[sresi]
-                    if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
-                        arr.append(sres[sresi])
-                        tiarr.append(ti)
-                        sourcearr.append(sresi)
-
+                        g_arr.append(sres[sresi])
+                        g_tiarr.append(ti / tscale)
+                        g_sourcearr.append(sresi)
+                        g_tscalearr.append(tscale)
+                        g_sres_bgs.append(sres_bgs[sresi])
+    
             if arr:
                 idx = np.argmax(arr)
                 ti = tiarr[idx]
                 si = sourcearr[idx]
+                toffs = 1/tscalearr[idx] * 0.5
                 ret[i, 0] = 1 + si
-                ret[i, 1] = ti + 0.5
+                ret[i, 1] = ti + toffs
+
+            export_data.append([g_arr, g_tiarr, g_sourcearr, g_tscalearr, g_sres_bgs])
+
+        if export:
+            tcache_path = os.path.join(self._base_path, "export.pkl")
+            fd = open(tcache_path, "wb")
+            pkl.dump(export_data, fd)
+            fd.close()
 
         return ret
+
+    def export_predict_trace(self, ids):
+        tcache_path = os.path.join(self._base_path, "export.pkl")
+        fd = open(tcache_path, "rb")
+        list_dat = pkl.load(fd)
+        fd.close()
+
+        print("runid,snr,ti,source,toffs,sresbgs")
+        for i in range(len(ids)):
+            runid = ids[i]
+            dat = list_dat[i]
+
+            for si in range(6):
+                fdat = (np.array(dat[2]) == si).astype(np.float64)
+                idx = np.argmax(dat[0] * fdat)
+                toffs = 1/dat[3][idx] * 0.5
+                print("%d,%f,%f,%d,%f,%f" % (runid, dat[0][idx], dat[1][idx], dat[2][idx]+1, toffs, dat[4][idx]))

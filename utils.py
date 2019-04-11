@@ -12,3 +12,6 @@ def denoise_signal(x, wavelet='db4', level=1):
     coeff[1:] = ( pywt.threshold( i, value=uthresh, mode='hard' ) for i in coeff[1:] )
     return pywt.waverec( coeff, wavelet, mode='per' )
 
+def denoise_signal_stub(x, wavelet='db4', level=1):
+    return x
+

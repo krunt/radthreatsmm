@@ -134,7 +134,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                     if (int(solution[SRC_ID]) == 0):
                         score += S_FN * p
                         FN[part] += 1
-                        #print("FN: %d" % run_id)
+                        #print("FN,%d" % run_id)
                     else:
                     
                         # Something is detected really close?
