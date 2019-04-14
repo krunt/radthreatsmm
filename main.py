@@ -3,6 +3,7 @@ import alg_radmm_simple
 import alg_radmm_imgproc_band
 import alg_radmm_nmf_decomp
 import alg_radmm_nn_signal_noise
+import alg_radmm_tree_signal_noise
 from sklearn.model_selection import train_test_split
 
 def main():
@@ -10,7 +11,8 @@ def main():
     #radmmAlg = alg_radmm_simple.AlgRadMMSimple("/mnt/ssd/radiologicalthreatsmm")
     #radmmAlg = alg_radmm_imgproc_band.AlgRadMMImgProcBand("/mnt/ssd/radiologicalthreatsmm")
     #radmmAlg = alg_radmm_nmf_decomp.AlgRadMMNmfDecomp("/mnt/ssd/radiologicalthreatsmm")
-    radmmAlg = alg_radmm_nn_signal_noise.AlgRadMMNeuralNetSignalNoise("/mnt/ssd/radiologicalthreatsmm")
+    #radmmAlg = alg_radmm_nn_signal_noise.AlgRadMMNeuralNetSignalNoise("/mnt/ssd/radiologicalthreatsmm")
+    radmmAlg = alg_radmm_tree_signal_noise.AlgRadMMTreeSignalNoise("/mnt/ssd/radiologicalthreatsmm")
     train_ids = radmmAlg.get_train_ids()
     train_ids_set, val_ids_set = train_test_split(train_ids, random_state=13, test_size=0.20, shuffle=True)
     train_x = radmmAlg.get_train_x(train_ids_set, False)
