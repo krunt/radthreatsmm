@@ -1,4 +1,8 @@
 
+import warnings
+
+warnings.filterwarnings("ignore",category=DeprecationWarning)
+
 import alg_radmm_base
 import numpy as np
 import pickle as pkl
@@ -15,17 +19,21 @@ from sklearn.decomposition import NMF
 from sklearn.metrics import auc, accuracy_score, confusion_matrix, mean_squared_error
 import xgboost as xgb
 
+
 NCOMP_BG = 12
-NTRAIN_BG = 32 #128
+NTRAIN_BG = 128
 MAX_ENERGY = 2500
+TWIN_PER_SCALE=[1,3,5,7,9]
 TOFFS=30
+TTHRESH = TOFFS + 5
 EBINS = 128
 TREE_BINS = 96
 KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
 SIGNAL_THRESHOLD = 1.4
 BG_THRESHOLD = 10.0
 SIGNAL_COEFF = [1.0,1.1,1.0,0.9,1.1,1.5]
-SIGNAL_THRESHOLD_ARR = [1.461,1.307,1.53,1.107,1.53,1.58]
+#SIGNAL_THRESHOLD_ARR = [1.461,1.307,1.53,1.107,1.53,1.58]
+PROBA_THRESHOLD_ARR = [0,0,0,0,0,0]
 TSCALE_LIST = [0.25,0.5,1.0,2.0,4.0]
 UTHR = 1500
 NN_BINS=EBINS
@@ -134,67 +142,66 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
     def get_test_x(self, ids):
         return self._prepare(ids, is_train=False)
 
-    def _row2record(self, row):
-        weigh = self.model_bg.transform(row.reshape((1,-1)))
+    def _row2record_batch(self, model_signal, dat):
+        weigh = self.model_bg.transform(dat)
 
         fit_bg = np.dot(weigh, self.comps_bg)
-        diff_fit_bg = np.abs(row - fit_bg)
+        diff_fit_bg = dat - fit_bg
 
-        weigh_s = self.model_bgs.transform(row.reshape((1,-1)))
+        weigh_s = model_signal.transform(dat)
 
-        fit_bgs = np.dot(weigh_s, self.comps_bgs)
-        diff_fit_bgs = np.abs(row - fit_bgs)
+        fit_bgs = np.dot(weigh_s, model_signal.components_)
+        diff_fit_bgs = dat - fit_bgs
 
-        diff_fit_bg = diff_fit_bg[:TREE_BINS]
-        diff_fit_bgs = diff_fit_bgs[:TREE_BINS]
+        diff_fit_bg = diff_fit_bg[:, :TREE_BINS]
+        diff_fit_bgs = diff_fit_bgs[:, :TREE_BINS]
 
-        norm_bg = np.linalg.norm(diff_fit_bg)
-        norm_bgs = np.linalg.norm(diff_fit_bgs)
+        norm_bg = np.linalg.norm(diff_fit_bg, axis=1)
+        norm_bgs = np.linalg.norm(diff_fit_bgs, axis=1)
 
-        hist_bg = np.histogram(diff_fit_bg, bins=6)[0]
-        hist_bgs = np.histogram(diff_fit_bgs, bins=6)[0]
+        #return np.transpose(np.vstack([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9)]))
+        return (norm_bg / (norm_bgs + 1e-9)).reshape((-1, 1))
 
-        xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9), 
-            np.sum(diff_fit_bg), np.sum(diff_fit_bgs), np.sum(diff_fit_bg) / np.sum(diff_fit_bgs), ])
+    def _row2record(self, model_signal, rows):
+        ret = []
+        for row in rows:
+            weigh = self.model_bg.transform(row.reshape((1,-1)))
+    
+            fit_bg = np.dot(weigh, self.comps_bg)
+            diff_fit_bg = np.abs(row - fit_bg)
+    
+            weigh_s = model_signal.transform(row.reshape((1,-1)))
+    
+            fit_bgs = np.dot(weigh_s, model_signal.components_)
+            diff_fit_bgs = np.abs(row - fit_bgs)
+    
+            diff_fit_bg = diff_fit_bg[:TREE_BINS]
+            diff_fit_bgs = diff_fit_bgs[:TREE_BINS]
+    
+            norm_bg = np.linalg.norm(diff_fit_bg)
+            norm_bgs = np.linalg.norm(diff_fit_bgs)
+    
+            #xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9)])
+            xrow = np.array([norm_bg / (norm_bgs + 1e-9)])
+            ret.append(xrow)
 
-        xrow = np.append(np.append(xrow, hist_bg), hist_bgs)
-
-        return xrow
-
-    def _row2record_new(self, row):
-        weigh = self.model_bg.transform(row.reshape((1,-1)))
-
-        fit_bg = np.dot(weigh, self.comps_bg)
-        diff_fit_bg = np.abs(row - fit_bg)
-
-        weigh_s = self.model_bgs.transform(row.reshape((1,-1)))
-
-        fit_bgs = np.dot(weigh_s, self.comps_bgs)
-        diff_fit_bgs = np.abs(row - fit_bgs)
-
-        diff_fit_bg = diff_fit_bg[:TREE_BINS]
-        diff_fit_bgs = diff_fit_bgs[:TREE_BINS]
-
-        norm_bg = np.linalg.norm(diff_fit_bg)
-        norm_bgs = np.linalg.norm(diff_fit_bgs)
-
-        hist_bg = np.histogram(diff_fit_bg, bins=6)[0]
-        hist_bgs = np.histogram(diff_fit_bgs, bins=6)[0]
-
-        xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9), 
-            np.sum(diff_fit_bg), np.sum(diff_fit_bgs), np.sum(diff_fit_bg) / np.sum(diff_fit_bgs), ])
-
-        xrow = np.append(xrow, hist_bg / (hist_bgs + 1e-9))
-
-        return xrow
+        return np.hstack(ret)
 
 
-    def _get_train_tree_data(self, x, ids):
+    def _get_train_tree_data(self, x, source, scaleidx, ids):
+        tscale1 = TSCALE_LIST[scaleidx]
         sig_list = []
         bg_list = []
         for (i,runid) in enumerate(ids):
-            if self._train_metadata.loc[runid]["SourceID"] != 0:
-                sig_list.append((i,runid))
+            source_id = self._train_metadata.loc[runid]["SourceID"]
+            source_time = self._train_metadata.loc[runid]["SourceTime"]
+            if x[i * len(TSCALE_LIST) + scaleidx].shape[0] < (TTHRESH + 5) * tscale1:
+                continue
+            if source_id != 0:
+                if source_time < TTHRESH:
+                    continue
+                if source_id == source:
+                    sig_list.append((i,runid))
             else:
                 bg_list.append((i,runid))
         np.random.shuffle(sig_list)
@@ -207,19 +214,24 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
         xlist = []
         ylist = []
         for elem in ((1, sig_list), (0, bg_list)):
-            for (idx,runid) in tqdm(elem[1]):
+            for (idx,runid) in tqdm(elem[1], desc="train(%d,%d)" % (source, scaleidx)):
                 source_time = 0
                 if elem[0]:
                     source_time = self._train_metadata.loc[runid]["SourceTime"]
                 else:
-                    source_time = 35
+                    source_time = TTHRESH
     
-                for j in [2]: #range(len(TSCALE_LIST)):
+                for j in [scaleidx]: #range(len(TSCALE_LIST)):
                     tscale = TSCALE_LIST[j]
-                    stime = int(source_time * tscale)
                     dat = np.abs(x[idx * len(TSCALE_LIST) + j])
 
-                    xrow = self._row2record_new(dat[stime])
+                    twin = TWIN_PER_SCALE[scaleidx]
+                    inp = []
+                    for tinc in range(twin):
+                        stime = int(source_time * tscale) + tinc - int(twin/2)
+                        inp.append(dat[stime])
+
+                    xrow = self._row2record(self.model_arr_bgs[source - 1], inp)
 
                     xlist.append(xrow)
                     ylist.append(elem[0])
@@ -229,6 +241,41 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
 
         return (xlist, ylist)
 
+    def _train_trees(self, x, ids):
+        for source in range(1,7):
+            for scaleidx in range(0,len(TSCALE_LIST)):
+                xdata, ydata = self._get_train_tree_data(x, source, scaleidx, ids)
+                xtrain_data, xtest_data, ytrain_data, ytest_data = train_test_split(xdata, ydata, 
+                    test_size=0.2, random_state=13)
+                xgb_model = xgb.XGBClassifier(objective="binary:logistic", random_state=42)
+                xgb_model.fit(xtrain_data, ytrain_data)
+                ytest_predict_data = xgb_model.predict(xtest_data)
+
+                conf_mat = confusion_matrix(ytest_data, ytest_predict_data).ravel()
+
+                print("(%d/%d) tn=%f, fp=%f, fn=%f, tp=%f" % (source, scaleidx, conf_mat[0], conf_mat[1], conf_mat[2], conf_mat[3]))
+                print("(%d/%d) (fp+fn)/(tn+tp)=%f" % (source, scaleidx, (conf_mat[1] + conf_mat[2]) / (conf_mat[0] + conf_mat[3])))
+                print("(%d/%d) mse=%f" % (source, scaleidx, mean_squared_error(ytest_predict_data, ytest_data)))
+
+                tcache_path = os.path.join(self._base_path, "trees", "tree_%d_%d.pkl" % (source, scaleidx))
+                fd = open(tcache_path, "wb")
+                pkl.dump(xgb_model, fd)
+                fd.close()
+
+    # source starts 0
+    def _get_model_tree(self, source, scaleidx):
+        return self.model_trees[source * len(TSCALE_LIST) + scaleidx]
+
+    def _load_trees(self):
+        self.model_trees = []
+        for source in range(1,7):
+            for scaleidx in range(0,len(TSCALE_LIST)):
+                tcache_path = os.path.join(self._base_path, "trees", "tree_%d_%d.pkl" % (source, scaleidx))
+                fd = open(tcache_path, "rb")
+                xgb_model = pkl.load(fd)
+                fd.close()
+
+                self.model_trees.append(xgb_model)
 
     def train(self, x, y, ids):
         runid_list = []
@@ -240,8 +287,8 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
 
         xlist = []
         for (idx,runid) in runid_list:
-            for j in range(len(TSCALE_LIST)):
-                xlist.append(np.abs(x[idx * len(TSCALE_LIST) + j]))
+            for j in [2]: #range(len(TSCALE_LIST)):
+                xlist.append(np.abs(x[idx * len(TSCALE_LIST) + j][TOFFS:]))
 
         xlist = np.vstack(xlist)
 
@@ -271,21 +318,11 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
             else:
                 self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[i], self.source_hist[i+5])
 
-        # neural network training
-        xdata, ydata = self._get_train_tree_data(x, ids)
-        xtrain_data, xtest_data, ytrain_data, ytest_data = train_test_split(xdata, ydata, 
-                test_size=0.2, random_state=13)
-        self.xgb_model = xgb.XGBClassifier(objective="binary:logistic", random_state=42)
-        self.xgb_model.fit(xtrain_data, ytrain_data)
-        ytest_predict_data = self.xgb_model.predict(xtest_data)
-
-        conf_mat = confusion_matrix(ytest_data, ytest_predict_data).ravel()
-        print("tn=%f, fp=%f, fn=%f, tp=%f" % (conf_mat[0], conf_mat[1], conf_mat[2], conf_mat[3]))
-        print("mse=%f" % mean_squared_error(ytest_predict_data, ytest_data))
+        self._train_trees(x, ids)
+        self._load_trees()
 
     def _calc_source_norm(self, dvec, source):
-        slice_vec = self.bin_map_arr[source]
-        return np.linalg.norm(dvec[slice_vec]) * self.weigh_bin_map_arr[source]
+        return np.linalg.norm(dvec[:TREE_BINS])
 
     def predict(self, x, ids, export=False):
         ret = np.zeros((len(ids), 2))
@@ -305,63 +342,75 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
             g_tiarr = []
             g_sourcearr = []
             g_tscalearr = []
-            g_sres_bgs = []
-            g_smooth_arr = []
-            g_dat_arr = []
 
-            for is_smooth in range(1):
+            dat_batch = []
+            for (j, tscale) in enumerate(TSCALE_LIST):
+                dat = np.abs(x[i * len(TSCALE_LIST) + j])
+                tmax = dat.shape[0]
+                toffs = int(30*tscale)
+
+                for ti in range(toffs,tmax):
+                    twin = TWIN_PER_SCALE[j]
+                    twinoffs = int(twin/2)
+                    if ti - twinoffs < toffs or ti + twinoffs >= tmax:
+                        continue
+
+                    for tinc in range(twin):
+                        stime = ti + tinc - twinoffs
+                        dat_batch.append(dat[stime])
+
+            dat_batch = np.vstack(dat_batch)
+
+            for source in range(len(self.model_arr_bgs)):
+                dat_batch_p = self._row2record_batch(self.model_arr_bgs[source], dat_batch)
+
+                iidx = 0
                 for (j, tscale) in enumerate(TSCALE_LIST):
-                    dat = np.abs(x[len(TSCALE_LIST)*i + j])
+                    dat = x[i * len(TSCALE_LIST) + j]
                     tmax = dat.shape[0]
+                    toffs = int(30*tscale)
+    
+                    model_data_batch = []
+                    for ti in range(toffs,tmax):
+                        twin = TWIN_PER_SCALE[j]
+                        twinoffs = int(twin/2)
+                        if ti - twinoffs < toffs or ti + twinoffs >= tmax:
+                            continue
+    
+                        inp = []
+                        for tinc in range(twin):
+                            stime = ti + tinc - twinoffs
+                            inp.append(dat_batch_p[iidx])
+                            iidx += 1
 
-                    if is_smooth:
-                        dat = np.abs(denoise_signal(dat))
-    
-                    weigh = self.model_bg.transform(dat)
-    
-                    weigh_arr_s = []
-                    for source in range(len(self.model_arr_bgs)):
-                        weigh_arr_s.append(self.model_arr_bgs[source].transform(dat))
-    
-                    for ti in range(int(30*tscale),tmax):
-                        fit_bg = np.dot(weigh[ti], self.comps_bg)
-                        diff_fit_bg = fit_bg - dat[ti, :]
-        
-                        sres = []
-                        sres_bg = []
-                        sres_bgs = []
-                        for source in range(len(self.model_arr_bgs)):
-                            fit_bgs = np.dot(weigh_arr_s[source][ti], self.model_arr_bgs[source].components_)
-                            diff_fit_bgs = fit_bgs - dat[ti, :]
-        
-                            norm_bg = self._calc_source_norm(diff_fit_bg, source)
-                            norm_bgs = self._calc_source_norm(diff_fit_bgs, source)
-        
-                            sres.append(norm_bg / norm_bgs)
-                            sres_bg.append(norm_bg)
-                            sres_bgs.append(norm_bgs)
-        
-                        if sres:
-                            sresi = np.argmax(sres)
-                            coeff = SIGNAL_COEFF[sresi]
-                            thresh = SIGNAL_THRESHOLD_ARR[sresi + is_smooth * 6]
-                            bgthresh = BG_THRESHOLD #BG_THRESHOLD_ARR[sresi]
-                            #if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
-                            if sres_bgs[sresi] > bgthresh and sres[sresi] > thresh:
-                                arr.append(sres[sresi])
-                                tiarr.append(ti / tscale)
-                                sourcearr.append(sresi)
-                                tscalearr.append(tscale)
-    
-                            if j == 2:
-                                g_arr.append(sres[sresi])
-                                g_tiarr.append(ti / tscale)
-                                g_sourcearr.append(sresi)
-                                g_tscalearr.append(tscale)
-                                g_sres_bgs.append(sres_bgs[sresi])
-                                g_smooth_arr.append(is_smooth)
-                                g_dat_arr.append(dat[ti, :])
-    
+                        model_data_batch.append(np.hstack(inp))
+
+                    model_data_batch = np.vstack(model_data_batch)
+                    proba_arr = self._get_model_tree(source, j).predict_proba(model_data_batch)
+
+                    proba_thresh = PROBA_THRESHOLD_ARR[source]
+
+                    iidx1 = 0
+                    for ti in range(toffs,tmax):
+                        twin = TWIN_PER_SCALE[j]
+                        twinoffs = int(twin/2)
+                        if ti - twinoffs < toffs or ti + twinoffs >= tmax:
+                            continue
+
+                        proba = proba_arr[iidx1][1]
+                        iidx1 += 1
+
+                        if proba > proba_thresh:
+                            arr.append(proba)
+                            tiarr.append((ti + toffs) / tscale)
+                            sourcearr.append(source)
+                            tscalearr.append(tscale)
+
+                        g_arr.append(proba)
+                        g_tiarr.append((ti + toffs) / tscale)
+                        g_sourcearr.append(source)
+                        g_tscalearr.append(tscale)
+
             if arr:
                 idx = np.argmax(arr)
                 ti = tiarr[idx]
@@ -369,21 +418,9 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
                 toffs = 1/tscalearr[idx] * 0.5
                 ret[i, 0] = 1 + si
                 ret[i, 1] = ti + toffs
-                nn_stat.append((-1, -1))
-            else:
-                idx = np.argmax(g_arr)
-                ti = g_tiarr[idx]
-                si = g_sourcearr[idx]
-                toffs = 1/g_tscalearr[idx] * 0.5
+                print((arr[idx], si, tscalearr[idx]))
 
-                xrow = self._row2record_new(g_dat_arr[idx])
-
-                ypred = self.xgb_model.predict(xrow.reshape((1,-1)))[0]
-                if ypred:
-                    ret[i, 0] = 1 + si
-                    ret[i, 1] = ti + toffs
-
-            export_data.append([g_arr, g_tiarr, g_sourcearr, g_tscalearr, g_sres_bgs, g_smooth_arr])
+            export_data.append([g_arr, g_tiarr, g_sourcearr, g_tscalearr])
 
         if export:
             tcache_path = os.path.join(self._base_path, "export.pkl")
@@ -391,11 +428,21 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
             pkl.dump(export_data, fd)
             fd.close()
 
-        if nn_stat:
-            tnnstat_path = os.path.join(self._base_path, "nn_stat.pkl")
-            fd = open(tnnstat_path, "wb")
-            pkl.dump(nn_stat, fd)
-            fd.close()
-
         return ret
 
+    def export_predict_trace(self, ids):
+        tcache_path = os.path.join(self._base_path, "export.pkl")
+        fd = open(tcache_path, "rb")
+        list_dat = pkl.load(fd)
+        fd.close()
+
+        print("runid,snr,ti,source,toffs,tscale")
+        for i in range(len(ids)):
+            runid = ids[i]
+            dat = list_dat[i]
+
+            for si in range(6):
+                fdat = (np.array(dat[2]) == si).astype(np.float64)
+                idx = np.argmax(dat[0] * fdat)
+                toffs = 1/dat[3][idx] * 0.5
+                print("%d,%f,%f,%d,%f,%f" % (runid, dat[0][idx], dat[1][idx], dat[2][idx]+1, toffs, dat[3][idx]))

@@ -94,7 +94,7 @@ float g_coeff_range[NUM_VARS][2] = {
     { 10, 11 },
     */
 };
-int g_coeff_nsteps[NUM_VARS] = { 14, 14, 14, 14, 14, 18 }; //, 4, 4, 4, 4, 4, 6 };
+int g_coeff_nsteps[NUM_VARS] = { 10, 10, 10, 10, 10, 12 }; //, 4, 4, 4, 4, 4, 6 };
 //int g_coeff_nsteps[NUM_VARS] = { 4, 4, 4, 4, 4, 6, 4, 4, 4, 4, 4, 6 }; // 2, 2, 2, 2, 2, 2 };
 
 const float S_FN = -2;
@@ -213,10 +213,11 @@ int main()
         ifstream fd("export.csv");
         getline(fd, line);
         for (;getline(fd, line);) {
-            int runid, source_id, issmooth;
-            float snr, ti, toffs, sresbgs;
-            sscanf(line.c_str(), "%d,%f,%f,%d,%f,%f,%d", &runid, &snr, &ti, 
-                    &source_id, &toffs, &sresbgs, &issmooth);
+            int runid, source_id;
+            int issmooth = 0;
+            float snr, ti, toffs, sresbg, sresbgs;
+            sscanf(line.c_str(), "%d,%f,%f,%d,%f,%f,%f", &runid, &snr, &ti, 
+                    &source_id, &toffs, &sresbg, &sresbgs);
             assert(runid >= 100000 && runid < 110000);
             runid -= 100000;
             if (g_runid_map[runid] == -1) {
@@ -288,8 +289,8 @@ int main()
     int best_code = best_code_arr[best_index];
     decode_coeff(best_code, coeff[0]);
     auto bc = incode2thresh(coeff[0]);
-    //cout << best_code << " " << bc[0] << " " << bc[1] << " " << bc[2] << " " << 
-        //bc[3] << " " << bc[4] << " " << bc[5] << endl;
+    float best_score = compute_score(coeff[0]);
+    cout << "best_score=" << best_score << endl;
     for (int i = 0; i < NUM_VARS; ++i) {
         cout << i << ": " << bc[i] << endl;
     }

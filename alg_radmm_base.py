@@ -153,7 +153,7 @@ class AlgRadMMBase(alg_base.AlgBase):
                         else:
                             score += S_FP * p
                             FL[part] += 1
-                            #print("FL: %d" % run_id)
+                            print("FL: %d" % run_id)
                             #FP[part] += 1
                             #FN[part] += 1
                 else:

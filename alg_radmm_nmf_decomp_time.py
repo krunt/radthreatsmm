@@ -11,7 +11,7 @@ from sklearn.decomposition import NMF
 from sklearn.ensemble import RandomForestClassifier
 
 NCOMP_BG = 12
-NTRAIN_BG = 32
+NTRAIN_BG = 128
 MAX_ENERGY = 2500
 EBINS = 128
 KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
@@ -22,7 +22,8 @@ SIGNAL_COEFF = [1.0,1.1,1.0,0.9,1.1,1.5]
 #SIGNAL_THRESHOLD_ARR = [1.4,1.3,1.5,1.3,1.4,1.56]
 #BG_THRESHOLD_ARR = [9.33,10.66,9.33,8,12,9.6]
 #SIGNAL_THRESHOLD_ARR = [1.45,1.3375,1.45,1.1125,1.45,1.7693]
-SIGNAL_THRESHOLD_ARR = [1.461,1.307,1.53,1.107,1.53,1.58]
+SIGNAL_THRESHOLD_ARR = [ 1.66667, 1.88889, 2, 1.22222, 2, 2.27273 ]
+#[1.72,1.9,2.09,1.18,2.27,2.38]
 #SIGNAL_THRESHOLD_ARR = [ 1.46667, 1.46667, 1.46667, 1.2, 1.46667, 1.84, 2, 1.73333, 1.73333, 1.2, 2, 2.24 ]
 #SIGNAL_THRESHOLD_ARR = [1.75,1.5,1.625,1.125,1.875,1.69231]
 #BG_THRESHOLD_ARR = [9.33,10.66,9.33,8,12,9.6]
@@ -69,7 +70,7 @@ def _rup(x, kev):
     return int((x + kev-1)/kev)
 
 
-class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
+class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
     def __init__(self, base_path):
         alg_radmm_base.AlgRadMMBase.__init__(self, base_path)
 
@@ -105,8 +106,9 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
             self.weigh_thresh_arr.append(len(self.bin_map_arr[i]) / EBINS)
 
     def _calc_source_norm(self, dvec, source):
-        slice_vec = self.bin_map_arr[source]
-        return np.linalg.norm(dvec[slice_vec]) * self.weigh_bin_map_arr[source]
+        #slice_vec = self.bin_map_arr[source]
+        #return np.linalg.norm(dvec[slice_vec]) * self.weigh_bin_map_arr[source]
+        return np.linalg.norm(dvec[:76])
 
     def _prepare(self, ids, is_train=True, validation=False, cache=True):
         filename = "train_nmf.pkl" if is_train else "test_nmf.pkl"
@@ -162,8 +164,10 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
 
         xlist = []
         for (idx,runid) in runid_list:
-            for j in range(len(TSCALE_LIST)):
-                xlist.append(np.abs(x[idx * len(TSCALE_LIST) + j]))
+            for j in [2]:
+                tscale = TSCALE_LIST[j]
+                toffs = int(30*tscale)
+                xlist.append(np.abs(x[idx * len(TSCALE_LIST) + j][toffs:]))
 
         xlist = np.vstack(xlist)
 
@@ -210,60 +214,73 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
             g_tiarr = []
             g_sourcearr = []
             g_tscalearr = []
+            g_sres_bg = []
             g_sres_bgs = []
-            g_smooth_arr = []
+            g_avg_neigh = []
 
-            #for is_smooth in range(2):
-            for is_smooth in range(1):
-                for (j, tscale) in enumerate(TSCALE_LIST):
-                    dat = np.abs(x[len(TSCALE_LIST)*i + j])
-                    tmax = dat.shape[0]
+            for (j, tscale) in enumerate(TSCALE_LIST):
+                dat = np.abs(x[len(TSCALE_LIST)*i + j])
+                tmax = dat.shape[0]
+                toffs = int(30*tscale)
 
-                    if is_smooth:
-                        dat = np.abs(denoise_signal(dat))
+                weigh = self.model_bg.transform(dat[toffs:])
+
+                weigh_arr_s = []
+                for source in range(len(self.model_arr_bgs)):
+                    weigh_arr_s.append(self.model_arr_bgs[source].transform(dat[toffs:]))
+
+                sres = []
+                sres_bg = []
+                sres_bgs = []
+
+                for ti in range(toffs,tmax):
+                    fit_bg = np.dot(weigh[ti-toffs], self.comps_bg)
+                    diff_fit_bg = fit_bg - dat[ti, :]
     
-                    weigh = self.model_bg.transform(dat)
-    
-                    weigh_arr_s = []
                     for source in range(len(self.model_arr_bgs)):
-                        weigh_arr_s.append(self.model_arr_bgs[source].transform(dat))
+                        fit_bgs = np.dot(weigh_arr_s[source][ti - toffs], 
+                                self.model_arr_bgs[source].components_)
+                        diff_fit_bgs = fit_bgs - dat[ti, :]
     
-                    for ti in range(int(30*tscale),tmax):
-                        fit_bg = np.dot(weigh[ti], self.comps_bg)
-                        diff_fit_bg = fit_bg - dat[ti, :]
-        
-                        sres = []
-                        sres_bg = []
-                        sres_bgs = []
-                        for source in range(len(self.model_arr_bgs)):
-                            fit_bgs = np.dot(weigh_arr_s[source][ti], self.model_arr_bgs[source].components_)
-                            diff_fit_bgs = fit_bgs - dat[ti, :]
-        
-                            norm_bg = self._calc_source_norm(diff_fit_bg, source)
-                            norm_bgs = self._calc_source_norm(diff_fit_bgs, source)
-        
-                            sres.append(norm_bg / norm_bgs)
-                            sres_bg.append(norm_bg)
-                            sres_bgs.append(norm_bgs)
-        
-                        if sres:
-                            sresi = np.argmax(sres)
-                            coeff = SIGNAL_COEFF[sresi]
-                            thresh = SIGNAL_THRESHOLD_ARR[sresi + is_smooth * 6]
-                            bgthresh = BG_THRESHOLD #BG_THRESHOLD_ARR[sresi]
-                            #if sres_bgs[sresi] > BG_THRESHOLD * coeff and sres[sresi] > SIGNAL_THRESHOLD * coeff:
-                            if sres_bgs[sresi] > bgthresh and sres[sresi] > thresh:
-                                arr.append(sres[sresi])
-                                tiarr.append(ti / tscale)
-                                sourcearr.append(sresi)
-                                tscalearr.append(tscale)
+                        norm_bg = self._calc_source_norm(diff_fit_bg, source)
+                        norm_bgs = self._calc_source_norm(diff_fit_bgs, source)
     
-                            g_arr.append(sres[sresi])
-                            g_tiarr.append(ti / tscale)
-                            g_sourcearr.append(sresi)
-                            g_tscalearr.append(tscale)
-                            g_sres_bgs.append(sres_bgs[sresi])
-                            g_smooth_arr.append(is_smooth)
+                        sres.append(norm_bg / (norm_bgs + 1e-9))
+                        sres_bg.append(norm_bg)
+                        sres_bgs.append(norm_bgs)
+
+                stride = len(self.model_arr_bgs)
+
+                t_w = 2
+                for ti in range(t_w, int(len(sres) / stride) - t_w):
+                    for source in range(len(self.model_arr_bgs)):
+                        idx = stride * ti + source
+
+                        neigh_avg = [0,0]
+                        for w in range(1,t_w+1):
+                            val = 0
+                            for vi in range(2*w+1):
+                                val += sres[stride * (ti + vi - w) + source]
+                            neigh_avg[w-1] = (val - sres[idx]) / (2*w)
+
+                        thresh = SIGNAL_THRESHOLD_ARR[source]
+                        bgthresh = BG_THRESHOLD
+
+                        score = sres[idx] * neigh_avg[0] * neigh_avg[1]
+
+                        if sres_bgs[idx] > bgthresh and score > thresh:
+                            arr.append(score)
+                            tiarr.append((ti + toffs) / tscale)
+                            sourcearr.append(source)
+                            tscalearr.append(tscale)
+
+                        g_arr.append(score)
+                        g_tiarr.append((ti + toffs) / tscale)
+                        g_sourcearr.append(source)
+                        g_tscalearr.append(tscale)
+                        g_sres_bg.append(sres_bg[idx])
+                        g_sres_bgs.append(sres_bgs[idx])
+                        g_avg_neigh.append(neigh_avg)
     
             if arr:
                 idx = np.argmax(arr)
@@ -273,7 +290,7 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
                 ret[i, 0] = 1 + si
                 ret[i, 1] = ti + toffs
 
-            export_data.append([g_arr, g_tiarr, g_sourcearr, g_tscalearr, g_sres_bgs, g_smooth_arr])
+            export_data.append([g_arr, g_tiarr, g_sourcearr, g_tscalearr, g_sres_bg, g_sres_bgs, g_avg_neigh])
 
         if export:
             tcache_path = os.path.join(self._base_path, "export.pkl")
@@ -289,15 +306,15 @@ class AlgRadMMNmfDecomp(alg_radmm_base.AlgRadMMBase):
         list_dat = pkl.load(fd)
         fd.close()
 
-        print("runid,snr,ti,source,toffs,sresbgs,issmooth")
+        print("runid,snr,ti,source,toffs,sresbg,sresbgs")
         for i in range(len(ids)):
             runid = ids[i]
             dat = list_dat[i]
+            dat[6] = np.array(dat[6])
 
             for si in range(6):
-                for is_smooth in range(1):
-                    fdat = (np.array(dat[2]) == si).astype(np.float64)
-                    fdat1 = (np.array(dat[5]) == is_smooth).astype(np.float64)
-                    idx = np.argmax(dat[0] * fdat * fdat1)
-                    toffs = 1/dat[3][idx] * 0.5
-                    print("%d,%f,%f,%d,%f,%f,%d" % (runid, dat[0][idx], dat[1][idx], dat[2][idx]+1, toffs, dat[4][idx], dat[5][idx]))
+                fdat = (np.array(dat[2]) == si).astype(np.float64)
+                idx = np.argmax(fdat * dat[0] * dat[6][:, 0] * dat[6][:, 1]) # * dat[6][:, 0])
+                toffs = 1/dat[3][idx] * 0.5
+                score = dat[0][idx] * dat[6][idx, 0] * dat[6][idx, 1] #* dat[6][idx, 0]
+                print("%d,%f,%f,%d,%f,%f,%f" % (runid, score, dat[1][idx], dat[2][idx]+1, toffs, dat[4][idx], dat[5][idx]))
