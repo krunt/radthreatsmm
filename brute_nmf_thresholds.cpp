@@ -132,9 +132,16 @@ vector<float> incode2thresh(const vector<int> &incode)
     return othresh;
 }
 
-float compute_score(const vector<int> &incode)
+float compute_score(const vector<float> &thresh, bool verbose=false)
 {
-    auto thresh = incode2thresh(incode);
+    const int FN = 0;
+    const int FP = 1;
+    const int FL = 2;
+    const int TN = 3;
+    const int TP = 4;
+
+    int stat[5] = {0};
+
     float score = 0;
     for (int id = 0; id < g_runid_cnt; ++id) {
         int best_cid_arr[2] = { -1, -1 };
@@ -168,6 +175,7 @@ float compute_score(const vector<int> &incode)
         if (g_truth_source_id[id] != 0) {
             if (best_cid == -1) {
                 score += S_FN;
+                stat[FN]++;
             } else {
                 float distance_in_meters = abs(g_export_time[id * 2 * NUM_CLASSES + best_cid] 
                         - g_truth_source_time[id]);
@@ -175,21 +183,28 @@ float compute_score(const vector<int> &incode)
                 if (distance_in_meters < 1) {
                     float distance_bonus = cos(distance_in_meters * M_PI/2);
                     score += distance_bonus;
+                    stat[TP]++;
 
                     if (g_truth_source_id[id] == best_cid % NUM_CLASSES) {
                         score += S_type;
                     }
                 } else {
                     score += S_FP;
+                    stat[FL]++;
                 }
             }
         } else {
             if (best_cid == -1) {
                 score += S_TN;
+                stat[TN]++;
             } else {
                 score += S_FP;
+                stat[FP]++;
             }
         }
+    }
+    if (verbose) {
+        cout << "TP=" << stat[TP] << " FP=" << stat[FP] << " FN=" << stat[FN] << " FL=" << stat[FL] << " TN=" << stat[TN] << endl;
     }
     return score;
 }
@@ -253,6 +268,11 @@ int main()
     const int num_threads = 8;
     omp_set_num_threads(num_threads);
 
+    {
+        vector<float> bc { 1.461,1.307,1.53,1.107,1.53,1.58 };
+        cout << "curr_score=" << compute_score(bc, true) << endl;
+    }
+
     float best_score_arr[num_threads];
     int best_code_arr[num_threads];
     memset(best_score_arr, 0, sizeof(best_score_arr));
@@ -270,7 +290,8 @@ int main()
         }
         int thread_num = omp_get_thread_num();
         decode_coeff(code,  coeff[thread_num]);
-        float score = compute_score(coeff[thread_num]);
+        auto thresh = incode2thresh(coeff[thread_num]);
+        float score = compute_score(thresh);
         {
             if (best_score_arr[thread_num] < score) {
                 best_code_arr[thread_num] = code;
@@ -289,11 +310,12 @@ int main()
     int best_code = best_code_arr[best_index];
     decode_coeff(best_code, coeff[0]);
     auto bc = incode2thresh(coeff[0]);
-    float best_score = compute_score(coeff[0]);
+    float best_score = compute_score(bc, true);
     cout << "best_score=" << best_score << endl;
     for (int i = 0; i < NUM_VARS; ++i) {
-        cout << i << ": " << bc[i] << endl;
+        cout << bc[i] << ", ";
     }
+    cout << endl;
 
     return 0;
 }

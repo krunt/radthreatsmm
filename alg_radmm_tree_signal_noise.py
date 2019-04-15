@@ -35,6 +35,7 @@ SIGNAL_COEFF = [1.0,1.1,1.0,0.9,1.1,1.5]
 #SIGNAL_THRESHOLD_ARR = [1.461,1.307,1.53,1.107,1.53,1.58]
 PROBA_THRESHOLD_ARR = [0,0,0,0,0,0]
 TSCALE_LIST = [0.25,0.5,1.0,2.0,4.0]
+TSTEP_PER_SCALE = [0.5,0.5,0.5,0.5,0.25]
 UTHR = 1500
 NN_BINS=EBINS
 NN_PROBA = 0.5
@@ -181,14 +182,14 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
             norm_bg = np.linalg.norm(diff_fit_bg)
             norm_bgs = np.linalg.norm(diff_fit_bgs)
     
-            #xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9)])
-            xrow = np.array([norm_bg / (norm_bgs + 1e-9)])
+            xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9)])
+            #xrow = np.array([norm_bg / (norm_bgs + 1e-9)])
             ret.append(xrow)
 
         return np.hstack(ret)
 
 
-    def _get_train_tree_data(self, x, source, scaleidx, ids):
+    def _get_train_tree_data(self, x, scaleidx, ids):
         tscale1 = TSCALE_LIST[scaleidx]
         sig_list = []
         bg_list = []
@@ -200,8 +201,7 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
             if source_id != 0:
                 if source_time < TTHRESH:
                     continue
-                if source_id == source:
-                    sig_list.append((i,runid))
+                sig_list.append((i,runid))
             else:
                 bg_list.append((i,runid))
         np.random.shuffle(sig_list)
@@ -211,10 +211,12 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
         sig_list = sig_list[:min_sz]
         bg_list = bg_list[:min_sz]
 
+        tpath = self._train_dir_path
+
         xlist = []
         ylist = []
         for elem in ((1, sig_list), (0, bg_list)):
-            for (idx,runid) in tqdm(elem[1], desc="train(%d,%d)" % (source, scaleidx)):
+            for (idx,runid) in tqdm(elem[1], desc="train(%d)" % (scaleidx)):
                 source_time = 0
                 if elem[0]:
                     source_time = self._train_metadata.loc[runid]["SourceTime"]
@@ -223,15 +225,36 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
     
                 for j in [scaleidx]: #range(len(TSCALE_LIST)):
                     tscale = TSCALE_LIST[j]
-                    dat = np.abs(x[idx * len(TSCALE_LIST) + j])
+                    invtscale=1/tscale
+
+                    g_dat = pd.read_csv(os.path.join(tpath, "%d.csv" % runid), header=None)
+                    d0=g_dat[0]*1e-6
+                    d1=np.cumsum(d0)
+                    d2=g_dat[1]
+                    bins = EBINS
+                    ebins = np.linspace(0,MAX_ENERGY,bins+1)
+                    tmax=d1.values[-1]
+
+                    tstep = TSTEP_PER_SCALE[j]
+                    tcurr = source_time
+
+                    hist_list = []
+                    tiarr = []
+                    tscalearr = []
 
                     twin = TWIN_PER_SCALE[scaleidx]
+                    twinoffs = int(twin/2)
+
                     inp = []
                     for tinc in range(twin):
-                        stime = int(source_time * tscale) + tinc - int(twin/2)
-                        inp.append(dat[stime])
+                        ttoffs_s = (tinc - twinoffs) * tstep
+                        dind = np.argwhere((d1 > tcurr + ttoffs_s) & (d1 < tcurr + ttoffs_s + invtscale)).flatten() 
+                        d3 = d2[dind]
+                        hist = np.histogram(d3, bins=ebins)[0]
+    
+                        inp.append(hist)
 
-                    xrow = self._row2record(self.model_arr_bgs[source - 1], inp)
+                    xrow = self._row2record(self.model_bgs, inp)
 
                     xlist.append(xrow)
                     ylist.append(elem[0])
@@ -242,40 +265,38 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
         return (xlist, ylist)
 
     def _train_trees(self, x, ids):
-        for source in range(1,7):
-            for scaleidx in range(0,len(TSCALE_LIST)):
-                xdata, ydata = self._get_train_tree_data(x, source, scaleidx, ids)
-                xtrain_data, xtest_data, ytrain_data, ytest_data = train_test_split(xdata, ydata, 
-                    test_size=0.2, random_state=13)
-                xgb_model = xgb.XGBClassifier(objective="binary:logistic", random_state=42)
-                xgb_model.fit(xtrain_data, ytrain_data)
-                ytest_predict_data = xgb_model.predict(xtest_data)
+         for scaleidx in range(0,len(TSCALE_LIST)):
+             xdata, ydata = self._get_train_tree_data(x, scaleidx, ids)
+             xtrain_data, xtest_data, ytrain_data, ytest_data = train_test_split(xdata, ydata, 
+                 test_size=0.2, random_state=13)
+             xgb_model = xgb.XGBClassifier(objective="binary:logistic", random_state=42)
+             xgb_model.fit(xtrain_data, ytrain_data)
+             ytest_predict_data = xgb_model.predict(xtest_data)
 
-                conf_mat = confusion_matrix(ytest_data, ytest_predict_data).ravel()
+             conf_mat = confusion_matrix(ytest_data, ytest_predict_data).ravel()
 
-                print("(%d/%d) tn=%f, fp=%f, fn=%f, tp=%f" % (source, scaleidx, conf_mat[0], conf_mat[1], conf_mat[2], conf_mat[3]))
-                print("(%d/%d) (fp+fn)/(tn+tp)=%f" % (source, scaleidx, (conf_mat[1] + conf_mat[2]) / (conf_mat[0] + conf_mat[3])))
-                print("(%d/%d) mse=%f" % (source, scaleidx, mean_squared_error(ytest_predict_data, ytest_data)))
+             print("(%d) tn=%f, fp=%f, fn=%f, tp=%f" % (scaleidx, conf_mat[0], conf_mat[1], conf_mat[2], conf_mat[3]))
+             print("(%d) (fp+fn)/(tn+tp)=%f" % (scaleidx, (conf_mat[1] + conf_mat[2]) / (conf_mat[0] + conf_mat[3])))
+             print("(%d) mse=%f" % (scaleidx, mean_squared_error(ytest_predict_data, ytest_data)))
 
-                tcache_path = os.path.join(self._base_path, "trees", "tree_%d_%d.pkl" % (source, scaleidx))
-                fd = open(tcache_path, "wb")
-                pkl.dump(xgb_model, fd)
-                fd.close()
+             tcache_path = os.path.join(self._base_path, "trees", "tree_%d.pkl" % (scaleidx))
+             fd = open(tcache_path, "wb")
+             pkl.dump(xgb_model, fd)
+             fd.close()
 
     # source starts 0
-    def _get_model_tree(self, source, scaleidx):
-        return self.model_trees[source * len(TSCALE_LIST) + scaleidx]
+    def _get_model_tree(self, scaleidx):
+        return self.model_trees[scaleidx]
 
     def _load_trees(self):
         self.model_trees = []
-        for source in range(1,7):
-            for scaleidx in range(0,len(TSCALE_LIST)):
-                tcache_path = os.path.join(self._base_path, "trees", "tree_%d_%d.pkl" % (source, scaleidx))
-                fd = open(tcache_path, "rb")
-                xgb_model = pkl.load(fd)
-                fd.close()
+        for scaleidx in range(0,len(TSCALE_LIST)):
+            tcache_path = os.path.join(self._base_path, "trees", "tree_%d.pkl" % (scaleidx))
+            fd = open(tcache_path, "rb")
+            xgb_model = pkl.load(fd)
+            fd.close()
 
-                self.model_trees.append(xgb_model)
+            self.model_trees.append(xgb_model)
 
     def train(self, x, y, ids):
         runid_list = []
