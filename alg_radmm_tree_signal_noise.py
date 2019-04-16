@@ -10,7 +10,7 @@ import pandas as pd
 import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from utils import denoise_signal, denoise_signal_stub
+from utils import denoise_signal, denoise_signal_stub, cross_correlation
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix
@@ -23,7 +23,7 @@ import xgboost as xgb
 NCOMP_BG = 12
 NTRAIN_BG = 128
 MAX_ENERGY = 2500
-TWIN_PER_SCALE=[1,3,5,7,9]
+TWIN_PER_SCALE=[9,9,9,9,9]
 TOFFS=30
 TTHRESH = TOFFS + 5
 EBINS = 128
@@ -176,14 +176,15 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
             fit_bgs = np.dot(weigh_s, model_signal.components_)
             diff_fit_bgs = np.abs(row - fit_bgs)
     
-            diff_fit_bg = diff_fit_bg[:TREE_BINS]
-            diff_fit_bgs = diff_fit_bgs[:TREE_BINS]
-    
+            diff_fit_bg = diff_fit_bg[:, :TREE_BINS]
+            diff_fit_bgs = diff_fit_bgs[:, :TREE_BINS]
+
             norm_bg = np.linalg.norm(diff_fit_bg)
             norm_bgs = np.linalg.norm(diff_fit_bgs)
     
-            xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9)])
+            xrow = np.array([norm_bg / (norm_bgs + 1e-9)])
             #xrow = np.array([norm_bg / (norm_bgs + 1e-9)])
+
             ret.append(xrow)
 
         return np.hstack(ret)
@@ -196,13 +197,15 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
         for (i,runid) in enumerate(ids):
             source_id = self._train_metadata.loc[runid]["SourceID"]
             source_time = self._train_metadata.loc[runid]["SourceTime"]
-            if x[i * len(TSCALE_LIST) + scaleidx].shape[0] < (TTHRESH + 5) * tscale1:
-                continue
             if source_id != 0:
                 if source_time < TTHRESH:
                     continue
+                if x[i * len(TSCALE_LIST) + 2].shape[0] < (source_time + 5 + 5):
+                    continue
                 sig_list.append((i,runid))
             else:
+                if x[i * len(TSCALE_LIST) + 2].shape[0] < (TTHRESH + 5 + 5):
+                    continue
                 bg_list.append((i,runid))
         np.random.shuffle(sig_list)
         np.random.shuffle(bg_list)
@@ -248,6 +251,8 @@ class AlgRadMMTreeSignalNoise(alg_radmm_base.AlgRadMMBase):
                     inp = []
                     for tinc in range(twin):
                         ttoffs_s = (tinc - twinoffs) * tstep
+                        assert(tcurr + ttoffs_s > TOFFS)
+                        assert(tcurr + ttoffs_s + invtscale < tmax)
                         dind = np.argwhere((d1 > tcurr + ttoffs_s) & (d1 < tcurr + ttoffs_s + invtscale)).flatten() 
                         d3 = d2[dind]
                         hist = np.histogram(d3, bins=ebins)[0]

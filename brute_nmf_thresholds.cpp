@@ -269,7 +269,7 @@ int main()
     omp_set_num_threads(num_threads);
 
     {
-        vector<float> bc { 1.461,1.307,1.53,1.107,1.53,1.58 };
+        vector<float> bc { 1.44444, 1.55556, 1.77778, 1.11111, 1.88889, 1.72727 };
         cout << "curr_score=" << compute_score(bc, true) << endl;
     }
 

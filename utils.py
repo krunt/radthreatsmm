@@ -15,3 +15,14 @@ def denoise_signal(x, wavelet='db4', level=1):
 def denoise_signal_stub(x, wavelet='db4', level=1):
     return x
 
+def cross_correlation(x, y):
+    mx = np.mean(x)
+    my = np.mean(y)
+
+    dx = (x.flatten() - mx)
+    dy = (y.flatten() - my)
+
+    dxx = np.sqrt(np.dot(dx, dx))
+    dyy = np.sqrt(np.dot(dy, dy))
+
+    return np.dot(dx, dy) / (dxx * dyy)

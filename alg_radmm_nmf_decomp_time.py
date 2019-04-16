@@ -9,16 +9,21 @@ import matplotlib.pyplot as plt
 from utils import denoise_signal, denoise_signal_stub
 from sklearn.decomposition import NMF
 from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
 
 SCORE_BINS=76
 NCOMP_BG = 12
 NTRAIN_BG = 128
 MAX_ENERGY = 2500
+TREE_BINS=96
 EBINS = 128
 KEV_PER_EBIN = int(MAX_ENERGY / EBINS)
 SIGNAL_THRESHOLD = 1.4
 BG_THRESHOLD = 10.0
+TWIN_PER_SCALE=[9,9,9,9,9]
 SIGNAL_COEFF = [1.0,1.1,1.0,0.9,1.1,1.5]
+#PROBA_THRESHOLD_ARR = [0.95,0.95,0.95,0.95,0.95,0.95]
+PROBA_THRESHOLD_ARR = [0.97,0.85,0.89,0.97,0.97,0.97]
 #SIGNAL_THRESHOLD_ARR = [1.4,1.3,1.5,1.3,1.5,1.6]
 #SIGNAL_THRESHOLD_ARR = [1.4,1.3,1.5,1.3,1.4,1.56]
 #BG_THRESHOLD_ARR = [9.33,10.66,9.33,8,12,9.6]
@@ -197,6 +202,46 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
                         self.source_hist[4], self.source_hist[9])
             else:
                 self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[i], self.source_hist[i+5])
+        self._load_trees()
+
+    # source starts 0
+    def _get_model_tree(self, scaleidx):
+        return self.model_trees[scaleidx]
+
+    def _load_trees(self):
+        self.model_trees = []
+        for scaleidx in range(0,len(TSCALE_LIST)):
+            tcache_path = os.path.join(self._base_path, "trees", "tree_%d.pkl" % (scaleidx))
+            fd = open(tcache_path, "rb")
+            xgb_model = pkl.load(fd)
+            fd.close()
+
+            self.model_trees.append(xgb_model)
+
+    def _row2record(self, model_signal, rows):
+        ret = []
+        for row in rows:
+            weigh = self.model_bg.transform(row.reshape((1,-1)))
+    
+            fit_bg = np.dot(weigh, self.comps_bg)
+            diff_fit_bg = np.abs(row - fit_bg)
+    
+            weigh_s = model_signal.transform(row.reshape((1,-1)))
+    
+            fit_bgs = np.dot(weigh_s, model_signal.components_)
+            diff_fit_bgs = np.abs(row - fit_bgs)
+    
+            diff_fit_bg = diff_fit_bg[:TREE_BINS]
+            diff_fit_bgs = diff_fit_bgs[:TREE_BINS]
+    
+            norm_bg = np.linalg.norm(diff_fit_bg)
+            norm_bgs = np.linalg.norm(diff_fit_bgs)
+    
+            xrow = np.array([norm_bg, norm_bgs, norm_bg / (norm_bgs + 1e-9)])
+            #xrow = np.array([norm_bg / (norm_bgs + 1e-9)])
+            ret.append(xrow)
+
+        return np.hstack(ret)
 
     def predict(self, x, ids, export=False, validation=False):
         ret = np.zeros((len(ids), 2))
@@ -218,6 +263,7 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             hist_list = []
             tiarr = []
             tscalearr = []
+            tscaleidxarr = []
 
             for (j, tscale) in enumerate(TSCALE_LIST):
                 invtscale=1/tscale
@@ -235,6 +281,7 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
                     hist_list.append(hist)
                     tiarr.append(tcurr)
                     tscalearr.append(tscale)
+                    tscaleidxarr.append(j)
 
                     tcurr += tstep
 
@@ -262,29 +309,56 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
 
                 score_bg = norm_bg / (norm_bgs + 1e-9)
 
-                bgthresh = BG_THRESHOLD
-                thresh = SIGNAL_THRESHOLD_ARR[source]
-
                 norm_bgs_arr.append(norm_bgs)
 
-                fdat = np.array((score_bg > thresh) & (norm_bgs > bgthresh)).astype(np.float64)
+                fdat = np.array((norm_bgs > BG_THRESHOLD)).astype(np.float64)
                 score_bg_arr.append(score_bg * fdat)
 
             norm_bgs_arr = np.hstack(norm_bgs_arr)
             score_bg_arr = np.hstack(score_bg_arr)
-    
+
+            export_proba = -1
             if score_bg_arr.shape[0] > 0:
                 idx = np.argmax(score_bg_arr)
                 if score_bg_arr[idx] > 0:
                     idx0 = idx % norm_bg.shape[0]
                     idx1 = int(idx / norm_bg.shape[0])
                     ti = tiarr[idx0]
-                    si = idx1
+                    source = idx1
                     toffs = 1/tscalearr[idx0] * 0.5
-                    ret[i, 0] = 1 + si
-                    ret[i, 1] = ti + toffs
+                    thresh = SIGNAL_THRESHOLD_ARR[source]
+                    tscaleidx = tscaleidxarr[idx0]
+                    if score_bg_arr[idx] > thresh:
+                        ret[i, 0] = 1 + source
+                        ret[i, 1] = ti + toffs
+                        export_proba = 0
 
-            export_data.append([norm_bg, tiarr, tscalearr, norm_bgs_arr, score_bg_arr])
+                    else:
+                        twin = TWIN_PER_SCALE[tscaleidx]
+                        twinoffs = int(twin/2)
+
+                        inp = []
+                        for tinc in range(twin):
+                            ttoffs = tinc - twinoffs
+                            if idx + ttoffs < 0 or idx0 + ttoffs < 0 or idx0 + ttoffs >= norm_bg.shape[0] or idx + ttoffs >= norm_bgs_arr.shape[0] or tscaleidxarr[idx0 + ttoffs] != tscaleidx:
+                                break
+                            inp.append(hist_list[idx0 + ttoffs])
+
+                        #print(idx,idx0,norm_bg.shape[0],tscaleidx,len(inp),twin)
+
+                        if len(inp) == twin:
+                            xrow = self._row2record(self.model_bgs, inp)
+                            model = self._get_model_tree(tscaleidx)
+                            proba = model.predict_proba(xrow.reshape(1, -1))[0][1]
+                            proba_thresh = PROBA_THRESHOLD_ARR[tscaleidx]
+                            #print(id,1+source,ti+toffs,tscaleidx,proba,proba_thresh)
+                            if proba > proba_thresh:
+                                ret[i, 0] = 1 + source
+                                ret[i, 1] = ti + toffs
+                            export_proba = proba
+
+            if export:
+                export_data.append([norm_bg, tiarr, tscalearr, norm_bgs_arr, score_bg_arr, export_proba])
 
         if export:
             tcache_path = os.path.join(self._base_path, "export.pkl")
@@ -300,7 +374,7 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
         list_dat = pkl.load(fd)
         fd.close()
 
-        print("runid,snr,ti,source,toffs,sresbg,sresbgs")
+        print("runid,snr,ti,source,toffs,sresbg,sresbgs,eproba")
         for i in range(len(ids)):
             runid = ids[i]
             dat = list_dat[i]
@@ -316,4 +390,5 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
                 toffs = 1/tscale * 0.5
                 sresbg = dat[0][idx]
                 sresbgs = dat[3][idx]
-                print("%d,%f,%f,%d,%f,%f,%f" % (runid, score, ti, si+1, toffs, sresbg, sresbgs))
+                eproba = dat[5]
+                print("%d,%f,%f,%d,%f,%f,%f,%f" % (runid, score, ti, si+1, toffs, sresbg, sresbgs, eproba))
