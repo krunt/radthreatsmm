@@ -7,6 +7,7 @@ import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from utils import denoise_signal, denoise_signal_stub
+from multiprocessing import Process, Queue, Pool
 from sklearn.decomposition import NMF
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
@@ -37,6 +38,9 @@ SIGNAL_THRESHOLD_ARR = [1.44444, 1.55556, 1.77778, 1.11111, 1.88889, 1.72727]
 #TSCALE_LIST = [0.5,1.0,2.0]
 TSCALE_LIST = [0.25,0.5,1.0,2.0,4.0]
 TSTEP_PER_SCALE = [0.5,0.5,0.5,0.5,0.25]
+#TSCALE_COEFF_LIST = [0.90,0.93,1.0,1.06,1.10]
+TSCALE_COEFF_LIST = [0.95,0.97,1.0,1.03,1.05]
+#TSCALE_COEFF_LIST = [1.0,1.0,1.0,1.0,1.0]
 
 # results for TSCALE_LIST = [0.25,0.5,1.0,2.0,4.0]
 #  Public part:
@@ -190,6 +194,14 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             self.model_bgs.components_[-10 + i] = self.source_hist[i]
         self.comps_bgs = self.model_bgs.components_
 
+        self.model_bgs5 = NMF(ncomp_bg+5, init='random', random_state=0)
+        self.model_bgs5.fit(xlist)
+        for i in range(ncomp_bg):
+            self.model_bgs5.components_[i] = self.model_bg.components_[i]
+        for i in range(5):
+            self.model_bgs5.components_[-5 + i] = self.source_hist[i]
+        self.comps_bgs5 = self.model_bgs5.components_
+
         self.model_arr_bgs = []
         for i in range(6):
             naddcomp = 4 if i == 5 else 2
@@ -203,10 +215,14 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             else:
                 self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[i], self.source_hist[i+5])
         self._load_trees()
+        self._load_trees_type()
 
     # source starts 0
     def _get_model_tree(self, scaleidx):
         return self.model_trees[scaleidx]
+
+    def _get_model_tree_type(self, scaleidx):
+        return self.model_trees_type[scaleidx]
 
     def _load_trees(self):
         self.model_trees = []
@@ -217,6 +233,16 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             fd.close()
 
             self.model_trees.append(xgb_model)
+
+    def _load_trees_type(self):
+        self.model_trees_type = []
+        for scaleidx in range(0,len(TSCALE_LIST)):
+            tcache_path = os.path.join(self._base_path, "trees_type", "tree_%d.pkl" % (scaleidx))
+            fd = open(tcache_path, "rb")
+            xgb_model = pkl.load(fd)
+            fd.close()
+
+            self.model_trees_type.append(xgb_model)
 
     def _row2record(self, model_signal, rows):
         ret = []
@@ -250,6 +276,8 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
 
         tpath = self._train_dir_path if validation else self._test_dir_path
 
+        pool = Pool(processes=1)
+
         for i in tqdm(range(len(ids))):
             id = ids[i]
 
@@ -264,6 +292,7 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             tiarr = []
             tscalearr = []
             tscaleidxarr = []
+            tscalecoeffarr = []
 
             for (j, tscale) in enumerate(TSCALE_LIST):
                 invtscale=1/tscale
@@ -282,6 +311,7 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
                     tiarr.append(tcurr)
                     tscalearr.append(tscale)
                     tscaleidxarr.append(j)
+                    tscalecoeffarr.append(TSCALE_COEFF_LIST[j])
 
                     tcurr += tstep
 
@@ -293,6 +323,8 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             for source in range(len(self.model_arr_bgs)):
                 weigh_arr_s.append(self.model_arr_bgs[source].transform(hist_list))
 
+            weigh5 = self.model_bgs5.transform(hist_list)
+
             fit_bg = np.dot(weigh, self.comps_bg)
             diff_fit_bg = fit_bg - hist_list
             diff_fit_bg = diff_fit_bg[:, :SCORE_BINS]
@@ -301,6 +333,7 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
 
             norm_bgs_arr = []
             score_bg_arr = []
+            bonus_arr = []
 
             for source in range(len(self.model_arr_bgs)):
                 fit_bgs = np.dot(weigh_arr_s[source], self.model_arr_bgs[source].components_)
@@ -313,25 +346,58 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
 
                 fdat = np.array((norm_bgs > BG_THRESHOLD)).astype(np.float64)
                 score_bg_arr.append(score_bg * fdat)
+                bonus_arr.append(tscalecoeffarr)
 
             norm_bgs_arr = np.hstack(norm_bgs_arr)
             score_bg_arr = np.hstack(score_bg_arr)
+            bonus_arr = np.hstack(bonus_arr)
 
             export_proba = -1
             if score_bg_arr.shape[0] > 0:
-                idx = np.argmax(score_bg_arr)
+                idx = np.argmax(score_bg_arr * bonus_arr)
                 if score_bg_arr[idx] > 0:
                     idx0 = idx % norm_bg.shape[0]
                     idx1 = int(idx / norm_bg.shape[0])
                     ti = tiarr[idx0]
                     source = idx1
                     toffs = 1/tscalearr[idx0] * 0.5
-                    thresh = SIGNAL_THRESHOLD_ARR[source]
+                    thresh = SIGNAL_THRESHOLD_ARR[source] * 0.95
                     tscaleidx = tscaleidxarr[idx0]
+                    model_tree_type = self._get_model_tree_type(tscaleidx)
+
                     if score_bg_arr[idx] > thresh:
-                        ret[i, 0] = 1 + source
+                        source_p = int(model_tree_type.predict(weigh5[idx0].reshape(1, -1))[0]) if source in [1,5,6] else (1 + source)
+                        ret[i, 0] = source_p # source
                         ret[i, 1] = ti + toffs
                         export_proba = 0
+
+                        # trying to improve accuracy
+                        fdat = score_bg_arr
+                        fdat_mask = np.zeros(score_bg_arr.shape[0])
+                        #fdat = fdat * fdat_mask
+
+                        tscaleidx += 1
+
+                        while tscaleidx < len(TSCALE_LIST):
+                            fdat_mask[source * norm_bg.shape[0]:(source + 1) * norm_bg.shape[0]] = np.array(tscaleidxarr) >= tscaleidx
+
+                            fdat1 = fdat * fdat_mask
+                            idx = np.argmax(fdat1)
+                            if fdat1[idx] < 1e-5:
+                                break;
+                            idx0 = idx % norm_bg.shape[0]
+                            idx1 = int(idx / norm_bg.shape[0])
+                            ti = tiarr[idx0]
+                            toffs = 1/tscalearr[idx0] * 0.5
+
+                            thresh = SIGNAL_THRESHOLD_ARR[source] * 0.95
+                            if score_bg_arr[idx] > thresh:
+                                model_tree_type = self._get_model_tree_type(tscaleidx)
+                                source_p = int(model_tree_type.predict(weigh5[idx0].reshape(1, -1))[0]) if source in [1,5,6] else (1 + source)
+                                ret[i, 0] = source_p
+                                ret[i, 1] = ti + toffs
+
+                            tscaleidx += 1
 
                     else:
                         twin = TWIN_PER_SCALE[tscaleidx]
@@ -374,6 +440,17 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
         list_dat = pkl.load(fd)
         fd.close()
 
+#        print("runid,snr,tscale")
+#        for i in range(len(ids[:20])):
+#            runid = ids[i]
+#            dat = list_dat[i]
+#            base_size = dat[0].shape[0]
+#
+#            for si in range(6):
+#                score_arr = dat[0] / dat[3][base_size * si:(base_size * (si + 1))]
+#                for j in range(base_size):
+#                    print("%d,%f,%f" % (runid, score_arr[j], dat[2][j]))
+
         print("runid,snr,ti,source,toffs,sresbg,sresbgs,eproba")
         for i in range(len(ids)):
             runid = ids[i]
@@ -383,12 +460,12 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
             for si in range(6):
                 score_arr = dat[0] / dat[3][base_size * si:(base_size * (si + 1))]
                 idx = np.argmax(score_arr)
-
+    
                 score = score_arr[idx]
                 ti = dat[1][idx]
                 tscale = dat[2][idx]
                 toffs = 1/tscale * 0.5
                 sresbg = dat[0][idx]
-                sresbgs = dat[3][idx]
+                sresbgs = dat[3][base_size*si + idx]
                 eproba = dat[5]
                 print("%d,%f,%f,%d,%f,%f,%f,%f" % (runid, score, ti, si+1, toffs, sresbg, sresbgs, eproba))
