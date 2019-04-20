@@ -164,7 +164,37 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
         return self._prepare(ids, is_train=True, validation=validation)
     def get_test_x(self, ids):
         return self._prepare(ids, is_train=False)
+
+    def get_test_ids(self):
+        tlist_path = os.path.join(self._base_path, "solution2.csv")
+        dat = pd.read_csv(tlist_path)
+        return dat["RunID"]
+
+    def _pkl_dump_to_fname(self, obj, fpath):
+        fd = open(fpath, "wb")
+        pkl.dump(obj, fd)
+        fd.close()
+
+    def _pkl_load_from_fname(self, fpath):
+        fd = open(fpath, "rb")
+        ret = pkl.load(fd)
+        fd.close()
+        return ret
+
     def train(self, x, y, ids):
+        #self._train_nmf(x, ids)
+        self._load_nmf()
+        self._load_trees()
+        self._load_trees_type()
+
+    # source starts 0
+    def _get_model_tree(self, scaleidx):
+        return self.model_trees[scaleidx]
+
+    def _get_model_tree_type(self, scaleidx):
+        return self.model_trees_type[scaleidx]
+
+    def _train_nmf(self, x, ids):
         runid_list = []
         for (i,runid) in enumerate(ids):
             if self._train_metadata.loc[runid]["SourceID"] == 0:
@@ -214,15 +244,26 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
                         self.source_hist[4], self.source_hist[9])
             else:
                 self.model_arr_bgs[-1].components_[-naddcomp:] = (self.source_hist[i], self.source_hist[i+5])
-        self._load_trees()
-        self._load_trees_type()
 
-    # source starts 0
-    def _get_model_tree(self, scaleidx):
-        return self.model_trees[scaleidx]
+        self._pkl_dump_to_fname(self.model_bg, os.path.join(self._base_path, "models_nmf", "model_bg.pkl"))
+        self._pkl_dump_to_fname(self.model_bgs, os.path.join(self._base_path, "models_nmf", "model_bgs.pkl"))
+        self._pkl_dump_to_fname(self.model_bgs5, os.path.join(self._base_path, "models_nmf", "model_bgs5.pkl"))
+        for i in range(6):
+            self._pkl_dump_to_fname(self.model_arr_bgs[i], 
+                    os.path.join(self._base_path, "models_nmf", "model_arr_bgs_%d.pkl" % (i)))
 
-    def _get_model_tree_type(self, scaleidx):
-        return self.model_trees_type[scaleidx]
+    def _load_nmf(self):
+        self.model_bg = self._pkl_load_from_fname(os.path.join(self._base_path, "models_nmf", "model_bg.pkl"))
+        self.model_bgs = self._pkl_load_from_fname(os.path.join(self._base_path, "models_nmf", "model_bgs.pkl"))
+        self.model_bgs5 = self._pkl_load_from_fname(os.path.join(self._base_path, "models_nmf", "model_bgs5.pkl"))
+        self.model_arr_bgs = []
+        for i in range(6):
+            self.model_arr_bgs.append(self._pkl_load_from_fname(os.path.join(
+                            self._base_path, "models_nmf", "model_arr_bgs_%d.pkl" % (i))))
+        self.comps_bg = self.model_bg.components_
+        self.comps_bgs = self.model_bgs.components_
+        self.comps_bgs5 = self.model_bgs5.components_
+
 
     def _load_trees(self):
         self.model_trees = []
@@ -275,8 +316,6 @@ class AlgRadMMNmfDecompTime(alg_radmm_base.AlgRadMMBase):
         export_data = []
 
         tpath = self._train_dir_path if validation else self._test_dir_path
-
-        pool = Pool(processes=1)
 
         for i in tqdm(range(len(ids))):
             id = ids[i]
